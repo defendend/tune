@@ -41,7 +41,7 @@ python3 evaluate_routing.py --skip-tier1         # skip the tier1-only baseline
 Test sets are reused from `day7/`: `correct.jsonl` (8 clean), `edge.jsonl`
 (8 borderline), `noisy.jsonl` (8 adversarial).
 
-## Results — public test set (24 inputs)
+## Results — small test set (24 inputs)
 
 ```
 pipeline        acc  when_OK  calls   esc%      $/req       $/1k   p50   p95
@@ -60,16 +60,31 @@ tier0_only (4.1 s). When a request hits tier 1, the strong model finishes
 the call faster than tier 0 would have spent on redundancy. p95 still
 spikes on the escalated path.
 
-## What gets escalated
+The 4 escalations: 2 self-check disagreements, 1 redundancy split, 1
+constraint FAIL. All 4 resolved on tier 1 (3 OK + 1 final FAIL on an
+adversarial input that broke the format on both tiers).
 
-From the public run, the 4 escalations were:
-- 2 cases where tier 0 self-check disagreed with the verdict
-- 1 case where redundancy split (UNSURE)
-- 1 case where the constraint check failed (no parseable verdict)
+## Results — larger production-like test set (71 inputs)
 
-All 4 escalations resolved successfully on tier 1 (3 OK, 1 final FAIL).
-The single FAIL was an adversarial input that broke the format on both
-tiers — correctly escalated, correctly refused.
+```
+pipeline        acc  when_OK  calls   esc%      $/req       $/1k   p50   p95
+----------------------------------------------------------------------------------------
+tier0_only    0.690    0.734   2.96   0.0% $ 0.001034 $   1.0344  6.6s  9.4s
+router        0.690    0.710   2.97  11.3% $ 0.001843 $   1.8428  4.6s  8.7s
+tier1_only    0.718    0.773   1.00   0.0% $ 0.008444 $   8.4439  1.6s  2.7s
+```
+
+This is the result that actually says something. **Routing did not
+improve accuracy here.** Worse — `accuracy_when_OK` for the router
+*decreased* slightly (0.734 → 0.710), because the escalated cases
+weren't actually any easier for tier 1 either. The 8 escalations
+(11.3%) replaced 8 tier-0 OK answers with tier-1 OK answers of similar
+or worse quality.
+
+Cost-wise: router sits at ~$1.84 / 1000, between tier-0 ($1.03) and
+tier-1 ($8.44). So you pay 78% more than tier-0 for **no accuracy gain**.
+Always-tier-1 buys +2.8 pp accuracy for **8.2× the cost** of tier-0 — a
+better trade if accuracy is the only thing you care about.
 
 ## Pricing model
 
@@ -85,22 +100,39 @@ For `escalation_rate = 0.17` and `cost_ratio ≈ 17`, that's roughly
 
 ## Findings
 
-1. **The routing pattern is essentially a money lever.** Router cost sits
-   between tier-0 (cheap, less reliable) and tier-1 (~10× more expensive,
-   more reliable). Good for tasks where you want best-effort accuracy on
-   most inputs and willingness to pay extra for the hard ones.
+1. **Routing only pays off when tier 1 is actually better than tier 0
+   on the cases the router escalates.** On the production-like 71-item
+   set, gpt-4o is only 2.8 pp more accurate than gpt-4o-mini on this
+   task (0.72 vs 0.69). The 8 cases the router escalated were hard
+   *for both models*, so swapping to tier 1 didn't help. Result:
+   identical overall accuracy, slightly worse `accuracy_when_OK`,
+   78% higher cost.
+   *Implication:* before deploying a router, validate that tier 1
+   actually outperforms tier 0 on the slice you intend to escalate
+   — otherwise the router is pure cost overhead.
 
-2. **Median latency goes DOWN, p95 goes UP.** Counter-intuitive: when
-   tier 0 is uncertain, day-7 redundancy adds 2-3 calls. Tier 1 is a
-   single fast call, so escalating skips the redundancy tail. But the
-   escalated requests still take the longest overall.
+2. **The right routing target is failure mode, not "uncertainty".**
+   gpt-4o-mini's confidence signal (day-7 composite) flags
+   uncertainty, but uncertainty correlates with task difficulty —
+   not with "tier-1 will fix this". A better router would route on
+   *what kind* of failure (e.g. format errors → tier 1; semantic
+   ambiguity → human, not tier 1).
 
-3. **The escalation rate is the only knob that matters for cost.**
-   Tighten the day-7 thresholds (HIGH_THR ↑, SELFCHECK_HIGH ↑) and you
-   escalate more. Loosen them and you save money but may accept more
-   wrong answers on tier 0.
+3. **Median latency goes DOWN, p95 stays roughly the same.**
+   Counter-intuitive: when tier 0 is uncertain, day-7 redundancy adds
+   2-3 calls. Tier 1 is a single fast call, so escalating skips the
+   redundancy tail. p50 6.6 s → 4.6 s. p95 only marginally better.
 
-4. **On easy data, you can't tell the tiers apart.** Public test set
-   shows identical accuracy across all three pipelines. Routing only
-   pays off when tier 0 actually gets some answers wrong that tier 1
-   gets right — i.e. on harder, production-like inputs.
+4. **gpt-4o is fast.** Single-call median 1.6 s vs 6.6 s for the
+   redundancy-heavy tier-0 pipeline. If you only care about latency
+   and have budget, always-tier-1 is competitive.
+
+5. **The escalation rate is the only knob that matters for cost.**
+   Tighten day-7 thresholds (HIGH_THR ↑, SELFCHECK_HIGH ↑) → escalate
+   more, costs go up linearly. Loosen → save money but accept more
+   wrong tier-0 answers.
+
+6. **On easy data, you can't tell the tiers apart.** Small test set
+   shows identical 0.833 accuracy across all three pipelines. You can
+   only validate routing on data hard enough to differentiate the
+   models.
