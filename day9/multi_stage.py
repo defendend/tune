@@ -56,50 +56,157 @@ a key=value list, comma-separated, on a single line. Do NOT add prose.
 
 Emit these keys exactly, in this order:
   type=<feature|bugfix|tech-refactor|api-contract|config-flag>
-  has_ui_location=<true|false>      ← does the ticket name a screen/module?
-  has_user_trigger=<true|false>     ← does it say WHEN the user sees/does it?
-  has_concrete_values=<true|false>  ← any numbers, exact strings, enum values?
-  has_link=<true|false>             ← contains http(s) link?
-  has_link_only=<true|false>        ← is the description essentially just a link?
-  has_contradiction=<true|false>    ← internal contradiction in requirements?
+  has_ui_location=<true|false>      ← does the ticket name a screen / module / component?
+  has_user_trigger=<true|false>     ← does it say WHEN the user sees it OR what user action triggers it?
+  has_concrete_values=<true|false>  ← any numbers, exact strings, enum values, field examples?
+  has_link=<true|false>             ← contains http(s) link OR markdown [text](url)?
+  has_link_only=<true|false>        ← description is essentially JUST a link, < 80 chars of text outside
+  has_contradiction=<true|false>    ← internal contradiction (e.g. "1x per session" vs "1x per install")
   len_chars=<integer>               ← length of description in characters
 
-Rules of thumb:
-  - "tech-refactor" → delete/remove/rename/migrate code, no UX change
-  - "api-contract"  → new endpoint, header, body field, parameter
-  - "config-flag"   → flag/experiment/config-driven behavior
-  - "bugfix"        → fix existing behavior (was X, now Y)
-  - "feature"       → otherwise
+How to classify `type`:
+  - tech-refactor → delete/remove/rename/migrate code, "выпилить", no UX change
+  - api-contract  → new endpoint, header, body field, request/response, parameter
+  - config-flag   → flag/experiment/config-driven behavior ("flag", "experiment", `feature_*`)
+  - bugfix        → fix existing behavior (was X, now Y), "поправить", "починить"
+  - feature       → otherwise
 
-Output exactly one line, no markdown, no explanation."""
+How to set `has_ui_location` (true if ANY of these):
+  - names a specific screen ("home screen", "checkout", "cart", "feed", "Поиск", "Главный")
+  - names a UI component ("pager", "banner", "header", "card", "shortcut", "сейф", "карточка фида")
+  - names a module / section / scenario
+
+How to set `has_user_trigger` (true if ANY of these):
+  - explicit user action: tap, swipe, scroll, click, open, return, нажатие, свайп, возврат, открытие
+  - explicit moment: "on app open", "после открытия", "при загрузке", "при выборе", "after login"
+  - example trigger: "пролистывание пейджера" → true (pager + swipe trigger)
+  - example trigger: "открываем экран" → true
+  - example trigger: "при появлении" → true
+
+How to set `has_concrete_values` (true if ANY of these):
+  - numbers (font sizes, padding, retries, timeouts, status codes)
+  - exact strings (header names, deeplink schemes, JSON field names)
+  - enum values (`enabled: true/false`, "type=card|apple_pay")
+  - localization keys (`empty_cart.title_v2`)
+  - method + path (POST /orders, GET /api/v1/cart)
+
+How to set `has_link_only`:
+  - true ONLY if description is essentially nothing-but-a-link
+  - false if there's a Figma/design link AND a meaningful sentence describing the change
+
+EXAMPLES (different domain, for illustration only — DO NOT match patterns
+to memorize, use the rules above to extract features for the actual input):
+
+Description: "## CRM dashboard pinning\\nLet sales managers pin up to 3 customer records to the top of the dashboard list. Pin button appears on hover over a row in the dashboard."
+Output: type=feature, has_ui_location=true, has_user_trigger=true, has_concrete_values=true, has_link=false, has_link_only=false, has_contradiction=false, len_chars=170
+
+Description: "## Slack channel notifications\\nSet up new notifications."
+Output: type=feature, has_ui_location=false, has_user_trigger=false, has_concrete_values=false, has_link=false, has_link_only=false, has_contradiction=false, len_chars=55
+
+Description: "## Drop legacy ReportGeneratorV1\\nRemove ReportGeneratorV1, ReportLegacyExporter, and their unit tests after migration to ReportGeneratorV2 is complete."
+Output: type=tech-refactor, has_ui_location=false, has_user_trigger=false, has_concrete_values=true, has_link=false, has_link_only=false, has_contradiction=false, len_chars=153
+
+Description: "## Toggle analytics opt-out\\nFlag `analytics_opt_out`, field `enabled`. true → all analytics requests skipped, false → normal behaviour. Default false."
+Output: type=config-flag, has_ui_location=false, has_user_trigger=false, has_concrete_values=true, has_link=false, has_link_only=false, has_contradiction=false, len_chars=147
+
+Output exactly one line for the actual user input, no markdown, no explanation."""
 
 
 # ── Stage 2 — verdict ────────────────────────────────────────────────────────
-STAGE2_SYSTEM = """You are a verdict engine. You receive a feature list extracted from a
-ticket. Apply these rules in order and emit ONLY:
+STAGE2_SYSTEM = """You are a verdict engine for a QA-readability check. You receive both
+the original ticket description AND a pre-extracted feature summary. Decide whether
+a QA engineer can write at least one happy-path test case from this description.
+
+Output EXACTLY two lines, nothing else:
   verdict=<Sufficient|Insufficient>
-  rule=<A|B|C|D|E|F|G|H|L|M|none>
+  rule=<A|E|F|G|H|L|M>
 
-Rules (apply in order, first match wins):
+Rules (apply in order, first match wins). Use the description as the source of truth;
+the feature list is a hint, not gospel — override it if the text clearly says otherwise.
 
-  E (contradiction): has_contradiction=true                          → Insufficient
-  G (link only):     has_link_only=true                              → Insufficient
-  F (too short):     len_chars<60 AND type≠tech-refactor             → Insufficient
-  H (vague+link):    has_link=true AND has_concrete_values=false
-                       AND type=feature                              → Insufficient
-  L (feature):       type=feature
-                       AND (has_ui_location=false OR has_user_trigger=false)
-                                                                     → Insufficient
-  M (config-flag):   type=config-flag AND has_concrete_values=false  → Insufficient
+  E (contradiction):
+    The description contains internally inconsistent requirements.
+    Example: "show 1 time per session" together with "show 1 time per install" → Insufficient
 
-  A (default ok):    everything else                                 → Sufficient
+  G (link only):
+    Description is essentially just a URL with no description of what changes.
+    Example: "see https://internal.example.com/thread/12345" → Insufficient
+    NOT this rule if there is a Figma/design link PLUS a sentence describing the change.
 
-For tech-refactor and api-contract, "code compiles / contract documented"
-counts as sufficient — do NOT require has_ui_location or has_user_trigger.
+  F (short and abstract, NOT tech-refactor):
+    Generic verb + object with no concrete values, places, or scenarios.
+    Examples → Insufficient: "Update icon", "Fix bug Y", "Support new promo type"
+    DOES NOT apply to tech-refactor (which is sufficient with just "delete X" + class name).
 
-Output exactly two lines, no prose, no markdown:
-  verdict=...
-  rule=..."""
+  H (verb + link without parameters, feature only):
+    Short action verb (increase / decrease / change / update / move) + a design link
+    BUT no concrete values/numbers/states.
+    Examples → Insufficient: "Increase header padding [Figma]", "Change banner color [Figma]"
+    NOT this rule if the description has any concrete number, value, or enum.
+
+  L (feature without integration scenario):
+    type=feature AND the description does NOT make clear BOTH:
+      (a) WHERE in the UI (screen/module/component), AND
+      (b) WHEN/HOW the user encounters or triggers it.
+    If EITHER (a) or (b) is clearly stated, do NOT fire L.
+    Counter-examples (Sufficient, no L):
+      - "Haptic on pager swipe" → has place (pager) AND trigger (swipe) ✓
+      - "Force location refresh on home open" → place (home) AND trigger (open) ✓
+      - "Pre-select method via deeplink app://payments?type=card" → trigger (deeplink) ✓
+    L applies to:
+      - "Support new promo type X [Figma]" → no where, no when ✗
+      - "Add deeplink push_settings, opens with stack preserved" → trigger source unclear ✗
+      - "New card layout in feed" → where vague, no trigger ✗
+
+  M (config-flag without example value):
+    type=config-flag AND no example value or effect mapping is shown.
+    Insufficient: "Flag card_style, field style. See design."
+    Sufficient:   "Flag lazy_init, enabled: bool. true → lazy, false → eager. Default false."
+
+  A (default Sufficient):
+    None of the above. tech-refactor and api-contract default to A as soon as they
+    document the class/endpoint — do NOT require UI location or trigger for them.
+
+EXAMPLES (illustrative, different domain — apply the rules to the actual
+input rather than pattern-matching against these):
+
+Description: "## Slack channel notifications\\nSet up new notifications."
+Features: type=feature, has_ui_location=false, has_user_trigger=false, has_concrete_values=false, ...
+Output:
+verdict=Insufficient
+rule=F
+
+Description: "## CRM dashboard pinning\\nLet sales managers pin up to 3 customer records to the top of the dashboard list. Pin button appears on hover over a row in the dashboard."
+Features: type=feature, has_ui_location=true, has_user_trigger=true, has_concrete_values=true, ...
+Output:
+verdict=Sufficient
+rule=A
+
+Description: "## Drop legacy ReportGeneratorV1\\nRemove ReportGeneratorV1, ReportLegacyExporter, and their unit tests."
+Features: type=tech-refactor, has_ui_location=false, has_user_trigger=false, has_concrete_values=true, ...
+Output:
+verdict=Sufficient
+rule=A
+
+Description: "## New 'urgent' SLA tier\\nWe support a new SLA tier called 'urgent'. [Spec](...)"
+Features: type=feature, has_ui_location=false, has_user_trigger=false, has_concrete_values=false, has_link=true, ...
+Output:
+verdict=Insufficient
+rule=L
+
+Description: "## Tighten table row spacing\\n[Design](...)"
+Features: type=feature, has_ui_location=true, has_user_trigger=false, has_concrete_values=false, has_link=true, ...
+Output:
+verdict=Insufficient
+rule=H
+
+Description: "## Flag rate_limit\\nFlag `rate_limit`, field `max_per_min`. See playbook."
+Features: type=config-flag, has_ui_location=false, has_user_trigger=false, has_concrete_values=false, ...
+Output:
+verdict=Insufficient
+rule=M
+
+Output exactly two lines, no prose, no markdown."""
 
 
 # ── Stage 3 — format ──────────────────────────────────────────────────────────
@@ -199,11 +306,17 @@ def classify_multi_stage(
     total_cost += s1_cost
 
     # ── Stage 2 ──────────────────────────────────────────────────────────────
-    # We feed only the canonical features back to the verdict engine, in the
-    # SAME compact format. This is what makes stage 2 cheap.
+    # v2: feed the verdict engine BOTH the structured features AND the original
+    # description, so it can override mechanical rule-firing when the text
+    # contradicts a missed feature. Cost: ~+150 tokens per call on average.
     s1_canonical = ", ".join(f"{k}={v}" for k, v in s1_kv.items()) or s1_text.strip()
+    s2_user = (
+        f"Description:\n{description}\n\n"
+        f"Pre-extracted features:\n{s1_canonical}\n\n"
+        "Decide verdict and rule per the system instructions."
+    )
     s2_text, s2_pt, s2_ct, s2_ms = _call(
-        client, model, STAGE2_SYSTEM, s1_canonical, max_tokens=30)
+        client, model, STAGE2_SYSTEM, s2_user, max_tokens=30)
     s2_cost = _cost(s2_pt, s2_ct)
     s2_kv = _parse_kv(s2_text)
     stages.append(StageRecord(

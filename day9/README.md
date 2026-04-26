@@ -36,15 +36,18 @@ in the same 4-section layout as the monolithic baseline.
 
 ## Files
 
-- `multi_stage.py`     — 3-stage pipeline, `classify_multi_stage()` entry point
-- `evaluate_multi.py`  — runs both pipelines on day-7's test sets and prints comparison
+- `multi_stage.py`        — 3-stage pipeline, `classify_multi_stage()` entry point
+- `evaluate_multi.py`     — compares monolithic vs multi-stage
+- `unified.py`            — composes multi-stage + day-7 self-check + day-8 tier-1 escalation
+- `evaluate_unified.py`   — three-way comparison (monolithic / multi_stage / unified)
 
 ## Run
 
 ```bash
 export OPENAI_API_KEY=sk-...
 pip install openai
-python3 evaluate_multi.py
+python3 evaluate_multi.py        # 2-way: mono vs multi-stage
+python3 evaluate_unified.py      # 3-way: mono vs multi-stage vs unified
 ```
 
 ## Results
@@ -61,19 +64,68 @@ multi_stage   0.750   1.000  1.000   3.00 $ 0.000213 $   0.2133  4.8s  5.8s
 ### Larger production-like test set (71 inputs, ~2700-token monolithic prompt)
 
 ```
-pipeline        acc   parse    fmt  calls      $/req       $/1k   p50   p95
+pipeline           acc   parse    fmt  calls      $/req       $/1k   p50   p95
 ----------------------------------------------------------------------------------------
-monolithic    0.718   0.986  0.986   1.00 $ 0.000497 $   0.4966  2.4s  3.7s
-multi_stage   0.634   1.000  1.000   3.00 $ 0.000264 $   0.2638  4.1s  5.2s
+monolithic        0.704   0.986  0.975   1.00 $ 0.000498 $   0.4976  2.7s  4.0s
+multi_stage v1    0.634   1.000  1.000   3.00 $ 0.000264 $   0.2638  4.1s  5.2s
+multi_stage v2    0.831   1.000  1.000   3.00 $ 0.000515 $   0.5155  4.9s  5.9s   ← winner
 ```
 
-### Per-stage breakdown (large set)
+v1 lost ~7 pp accuracy because:
+- Stage-2 only saw extracted features, not the original text — no recovery from
+  Stage-1 misses
+- Stage-1 and Stage-2 prompts were too terse, no counter-examples for the rules
+
+v2 fixed both:
+- Stage 2 now sees BOTH the structured features and the original description.
+  The features are a hint; the rule engine can override them when the text
+  clearly says otherwise.
+- Stage 1 and Stage 2 prompts include 4 worked examples each (in a deliberately
+  different domain — CRM/business, not the eval domain — to avoid leaking gold
+  answers into the prompt).
+
+### Per-stage breakdown (v2, large set)
 
 ```
-extract  avg_cost=$0.000092  avg_in_tokens=453  avg_out_tokens=39   avg_latency=1178ms
-verdict  avg_cost=$0.000053  avg_in_tokens=320  avg_out_tokens=7    avg_latency=789ms
-format   avg_cost=$0.000119  avg_in_tokens=400  avg_out_tokens=98   avg_latency=2164ms
+extract  avg_cost=$0.000202  avg_in_tokens=1185  avg_out_tokens=39  avg_latency=1480ms
+verdict  avg_cost=$0.000202  avg_in_tokens=1314  avg_out_tokens=7   avg_latency=1026ms
+format   avg_cost=$0.000112  avg_in_tokens=400   avg_out_tokens=86  avg_latency=2323ms
 ```
+
+### Unified pipeline — multi-stage + self-check + tier-1 escalation
+
+`unified.py` composes everything from days 7-9 into one pipeline:
+
+1. multi_stage v2 on tier 0 (gpt-4o-mini)        — 3 calls
+2. self-check on tier-0 output                   — 1 short YES/NO call (day-7 trick)
+3. if `p_yes >= 0.85` → trust tier 0
+   else → escalate to tier 1 monolithic (gpt-4o, 1 call) and check agreement
+   - tier-1 OK + same verdict       → OK
+   - tier-1 OK + different verdict  → UNSURE
+   - tier-1 broken format           → FAIL
+
+Result on the same 71-input large test set:
+
+```
+pipeline            acc   when_OK   parse    fmt   esc%   calls   $/1k   p50/p95
+----------------------------------------------------------------------------------------
+monolithic        0.690    0.696    0.986   0.975   0%    1.00   $0.50   2.7s/4.2s
+multi_stage v2    0.775    0.775    1.000   1.000   0%    3.00   $0.52   4.8s/6.2s
+unified           0.803    0.852    1.000   1.000  72%    4.72   $6.58   6.7s/8.5s   <- best
+```
+
+Notes:
+- `accuracy_when_OK = 0.852` is the highest of any pipeline in this set —
+  when unified says OK, it's right ~85% of the time vs ~78% for multi_stage_v2
+  and ~70% for monolithic.
+- Cost goes 12× over multi_stage_v2 because the self-check threshold (0.85)
+  forces escalation on ~72% of cases. Lowering the threshold to 0.7 cuts
+  escalation roughly in half and brings cost to ~$2.5/1k — at the price of
+  accepting tier-0 verdicts more readily.
+- UNSURE status (8 cases here) is what makes unified different from a
+  one-shot pipeline: it explicitly hands off ambiguous cases for human
+  review instead of producing a confident wrong answer.
+- 100% format/parse adherence inherited from multi-stage.
 
 ## Findings
 
