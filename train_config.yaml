@@ -1,0 +1,32 @@
+# MLX-LM LoRA config for fine-tuning Qwen2.5-7B-Instruct-4bit.
+# Run:
+#   mlx_lm.lora -c train_config.yaml --train
+#
+# Hyperparameters are tuned for a small dataset (~20-30 train examples).
+# More iterations matter more than a big batch — otherwise the adapter does
+# not converge.
+
+model: "mlx-community/Qwen2.5-7B-Instruct-4bit"
+train: true
+data: "data"                  # expects data/train.jsonl + data/valid.jsonl
+fine_tune_type: "lora"        # classic LoRA (not DoRA, not full)
+mask_prompt: true             # train only on assistant tokens; system+user are not in loss
+
+# LoRA layers
+num_layers: 16                # how many top transformer blocks to adapt
+adapter_path: "adapters"      # where adapter weights are saved
+
+# Training loop
+batch_size: 2                 # 7B-4bit on M3 Pro 36GB — 2 fits comfortably
+iters: 300                    # ~12 epochs over 24 examples / batch=2
+learning_rate: 1.0e-4         # standard for LoRA on Qwen
+optimizer: "adamw"
+grad_accumulation_steps: 2    # effective batch = 4
+
+steps_per_report: 10
+steps_per_eval: 50            # compute val loss every 50 steps
+val_batches: 5
+save_every: 100
+max_seq_length: 4096
+
+seed: 42

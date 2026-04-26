@@ -1,0 +1,28 @@
+# Generated dataset splits — rebuild via build_dataset.py + split.py
+data/all.jsonl
+data/train.jsonl
+data/valid.jsonl
+data/test.jsonl
+
+# Inference results — fixed reference dumps that you may or may not want to commit
+baseline_results.json
+baseline_openai_results.json
+finetuned_results.json
+openai_job.json
+
+# LoRA adapters (large)
+adapters/
+fused-model/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
