@@ -3,7 +3,8 @@
 Runs three pipelines side-by-side on the same inputs and prints comparison:
 
   A. tier0_only   — gpt-4o-mini with the day-7 confidence pipeline
-  B. router       — tier 0 first, escalate to gpt-4o on UNSURE/FAIL
+  B. router       — tier 0 first, escalate to gpt-4o on UNSURE/FAIL,
+                    plus tier-0 OK spot-check + tier-1 self-check (v2)
   C. tier1_only   — gpt-4o always (single call + constraint check)
 
 For each pipeline we report:
